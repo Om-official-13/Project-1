@@ -1,0 +1,2 @@
+// SVG-based icon generator — we create real PNG icons at build time
+// For now, use an SVG icon as fallback in the manifest
