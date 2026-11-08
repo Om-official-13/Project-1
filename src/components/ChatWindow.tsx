@@ -16,6 +16,7 @@ import {
   Bell,
   BellOff,
   Info,
+  Reply,
 } from 'lucide-react';
 import { useAuth } from '@/contexts/AuthContext';
 import { useMessages, type ChatMessage } from '@/hooks/useMessages';
@@ -37,6 +38,21 @@ const WALLPAPERS = [
 function formatTime(iso: string): string {
   const d = new Date(iso);
   return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+}
+
+function formatLastSeen(iso: string): string {
+  const d = new Date(iso);
+  const now = new Date();
+  const diffMs = now.getTime() - d.getTime();
+  const diffMin = Math.floor(diffMs / 60000);
+  if (diffMin < 1) return 'last seen just now';
+  if (diffMin < 60) return `last seen ${diffMin} min ago`;
+  const diffHr = Math.floor(diffMin / 60);
+  if (diffHr < 24) return `last seen ${diffHr} hour${diffHr > 1 ? 's' : ''} ago`;
+  const diffDay = Math.floor(diffHr / 24);
+  if (diffDay === 1) return 'last seen yesterday';
+  if (diffDay < 7) return `last seen ${diffDay} days ago`;
+  return `last seen ${d.toLocaleDateString([], { month: 'short', day: 'numeric' })}`;
 }
 
 function formatDateDivider(iso: string): string {
@@ -64,6 +80,10 @@ export function ChatWindow({ peer, onStartCall, onBack }: ChatWindowProps) {
     sendStopTyping,
     deleteMessageForMe,
     deleteMessageForEveryone,
+    deleteAllMessages,
+    replyToMessage,
+    clearReply,
+    replyTarget,
   } = useMessages(user?.id ?? '', peer.id, peer.display_name, profile?.display_name);
 
   const [input, setInput] = useState('');
@@ -75,6 +95,7 @@ export function ChatWindow({ peer, onStartCall, onBack }: ChatWindowProps) {
   const [isRecording, setIsRecording] = useState(false);
   const [recordingTime, setRecordingTime] = useState(0);
   const [permissionError, setPermissionError] = useState(false);
+  const [showDeleteAllConfirm, setShowDeleteAllConfirm] = useState(false);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -109,6 +130,7 @@ export function ChatWindow({ peer, onStartCall, onBack }: ChatWindowProps) {
     await sendTextMessage(input);
     setInput('');
     sendStopTyping();
+    clearReply();
   }
 
   function handleKeyDown(e: React.KeyboardEvent) {
@@ -217,7 +239,7 @@ export function ChatWindow({ peer, onStartCall, onBack }: ChatWindowProps) {
         <div className="flex-1 min-w-0">
           <h2 className="text-white font-semibold text-[15px] truncate">{peer.display_name}</h2>
           <p className={`text-xs ${isPeerTyping ? 'text-[#66b5f5]' : 'text-[#aebac1]'}`}>
-            {isPeerTyping ? 'typing...' : peerIsOnline ? 'online' : 'last seen recently'}
+            {isPeerTyping ? 'typing...' : peerIsOnline ? 'online' : formatLastSeen(presenceMap[peer.id]?.last_seen ?? peer.last_seen)}
           </p>
         </div>
         <button
@@ -264,6 +286,16 @@ export function ChatWindow({ peer, onStartCall, onBack }: ChatWindowProps) {
                 {notificationsMuted ? <Bell className="h-4 w-4 text-[#66b5f5]" /> : <BellOff className="h-4 w-4 text-[#aebac1]" />}
                 {notificationsMuted ? 'Unmute notifications' : 'Mute notifications'}
               </button>
+              <button
+                onClick={() => {
+                  setShowDeleteAllConfirm(true);
+                  setChatMenuOpen(false);
+                }}
+                className="flex w-full items-center gap-3 px-4 py-3 text-left text-sm text-red-400 transition-colors hover:bg-[#202b36]"
+              >
+                <Trash2 className="h-4 w-4" />
+                Delete all chats
+              </button>
             </div>
           </>
         )}
@@ -302,9 +334,19 @@ export function ChatWindow({ peer, onStartCall, onBack }: ChatWindowProps) {
                 </div>
               )}
               <div
-                className={`flex ${msg.isMine ? 'justify-end' : 'justify-start'}`}
+                className={`group/msg flex items-center gap-1 ${msg.isMine ? 'justify-end' : 'justify-start'}`}
                 onContextMenu={(e) => handleMessageContextMenu(e, msg.id)}
               >
+                {!msg.isMine && !msg.deleted_for_everyone && (
+                  <button
+                    onClick={() => replyToMessage(msg)}
+                    className="opacity-0 group-hover/msg:opacity-100 shrink-0 p-1.5 text-slate-400 hover:text-white hover:bg-slate-700/50 rounded-full transition-all"
+                    title="Reply"
+                    aria-label="Reply to message"
+                  >
+                    <Reply className="w-4 h-4" />
+                  </button>
+                )}
                 <div
                   className={`max-w-[86%] md:max-w-[70%] rounded-xl px-3 py-2 ${
                     msg.isMine
@@ -480,8 +522,57 @@ export function ChatWindow({ peer, onStartCall, onBack }: ChatWindowProps) {
         </div>
       )}
 
+      {/* Delete all chats confirmation */}
+      {showDeleteAllConfirm && (
+        <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4">
+          <div className="bg-[#17212b] rounded-xl border border-[#2a3942] shadow-2xl max-w-sm w-full p-5">
+            <h3 className="text-white text-lg font-semibold mb-2">Delete all chats?</h3>
+            <p className="text-[#aebac1] text-sm mb-5">
+              This will delete all messages in this chat for you. The other person will still see them.
+            </p>
+            <div className="flex gap-3 justify-end">
+              <button
+                onClick={() => setShowDeleteAllConfirm(false)}
+                className="px-4 py-2 text-sm text-[#aebac1] hover:text-white transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={async () => {
+                  await deleteAllMessages();
+                  setShowDeleteAllConfirm(false);
+                }}
+                className="px-4 py-2 text-sm font-medium text-white bg-red-600 hover:bg-red-500 rounded-lg transition-colors"
+              >
+                Delete
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Input area */}
       <div className="p-2 bg-[#17212b] border-t border-[#202b36] md:p-3">
+        {replyTarget && (
+          <div className="mb-2 flex items-center gap-2 rounded-lg border-l-4 border-[#3390ec] bg-[#242f3d] px-3 py-2">
+            <Reply className="w-4 h-4 text-[#3390ec] shrink-0" />
+            <div className="flex-1 min-w-0">
+              <p className="text-xs font-medium text-[#3390ec]">
+                {replyTarget.isMine ? 'You' : peer.display_name}
+              </p>
+              <p className="text-xs text-[#aebac1] truncate">
+                {replyTarget.text_content || replyTarget.media_type || 'Message'}
+              </p>
+            </div>
+            <button
+              onClick={clearReply}
+              className="shrink-0 p-1 text-slate-400 hover:text-white hover:bg-slate-700 rounded-full transition-colors"
+              aria-label="Cancel reply"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+        )}
         {permissionError && (
           <div className="mb-2 flex items-center gap-3 rounded-xl border border-amber-400/30 bg-amber-400/10 px-3 py-2">
             <p className="flex-1 text-xs text-amber-100">Microphone access is needed to record a voice message.</p>

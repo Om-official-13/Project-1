@@ -153,26 +153,22 @@ export function useWebRTC(currentUserId: string, currentDisplayName?: string): U
         playCallEnded();
         cleanup();
       } else if (signal.signal_type === 'sdp_offer') {
+        // Receiver gets the caller's offer.
+        // If the peer connection already exists (acceptCall already ran), process immediately.
+        // Otherwise, store it — acceptCall will process it when it creates the peer connection.
         pendingOfferRef.current = data.sdp as RTCSessionDescriptionInit;
         let pc = pcRef.current;
-        if (!pc) {
-          const createConnection = createPeerConnectionRef.current;
-          if (!createConnection) return;
-          pc = createConnection();
-          pcRef.current = pc;
-          localStreamRef.current?.getTracks().forEach((track) => {
-            pc?.addTrack(track, localStreamRef.current as MediaStream);
-          });
+        if (pc) {
+          await pc.setRemoteDescription(pendingOfferRef.current);
+          for (const cand of pendingCandidatesRef.current) {
+            await pc.addIceCandidate(cand as RTCIceCandidateInit);
+          }
+          pendingCandidatesRef.current = [];
+          const answer = await pc.createAnswer();
+          await pc.setLocalDescription(answer);
+          await sendSignal(signal.from_user, 'sdp_answer', { sdp: answer });
         }
-        await pc.setRemoteDescription(pendingOfferRef.current);
-        for (const cand of pendingCandidatesRef.current) {
-          await pc.addIceCandidate(cand as RTCIceCandidateInit);
-        }
-        pendingCandidatesRef.current = [];
-        const answer = await pc.createAnswer();
-        await pc.setLocalDescription(answer);
-        await sendSignal(signal.from_user, 'sdp_answer', { sdp: answer });
-        setCallState('calling');
+        // If no pc yet, acceptCall will pick up pendingOfferRef.current
       } else if (signal.signal_type === 'sdp_answer') {
         if (pcRef.current && pcRef.current.signalingState !== 'stable') {
           await pcRef.current.setRemoteDescription(data.sdp as RTCSessionDescriptionInit);
@@ -277,6 +273,13 @@ export function useWebRTC(currentUserId: string, currentDisplayName?: string): U
         return;
       }
 
+      // Create peer connection and add local tracks immediately
+      const pc = createPeerConnection();
+      pcRef.current = pc;
+      localStreamRef.current.getTracks().forEach((track) => {
+        pc.addTrack(track, localStreamRef.current!);
+      });
+
       subscribeToSignals(peerUserId);
       setCallState('calling');
 
@@ -292,6 +295,11 @@ export function useWebRTC(currentUserId: string, currentDisplayName?: string): U
         return;
       }
 
+      // Create and send the SDP offer — the caller is the offerer
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+      await sendSignal(peerUserId, 'sdp_offer', { sdp: offer });
+
       // Send push notification for the call (for background/closed app)
       sendNotificationViaEdgeFunction({
         targetUser: peerUserId,
@@ -304,7 +312,7 @@ export function useWebRTC(currentUserId: string, currentDisplayName?: string): U
 
       playCallOutgoing();
     },
-    [currentUserId, sendSignal, subscribeToSignals, cleanup],
+    [currentUserId, sendSignal, subscribeToSignals, cleanup, createPeerConnection],
   );
 
   const acceptCall = useCallback(async () => {
@@ -326,6 +334,7 @@ export function useWebRTC(currentUserId: string, currentDisplayName?: string): U
       return;
     }
 
+    // Create peer connection and add local tracks
     const pc = createPeerConnection();
     pcRef.current = pc;
     setCallState('calling');
@@ -336,10 +345,18 @@ export function useWebRTC(currentUserId: string, currentDisplayName?: string): U
 
     subscribeToSignals(peerUserId);
 
-    // Create and send offer
-    const offer = await pc.createOffer();
-    await pc.setLocalDescription(offer);
-    await sendSignal(peerUserId, 'sdp_offer', { sdp: offer });
+    // The receiver waits for the caller's sdp_offer, then creates and sends the answer.
+    // If the offer already arrived (stored in pendingOfferRef), process it now.
+    if (pendingOfferRef.current) {
+      await pc.setRemoteDescription(pendingOfferRef.current);
+      for (const cand of pendingCandidatesRef.current) {
+        await pc.addIceCandidate(cand as RTCIceCandidateInit);
+      }
+      pendingCandidatesRef.current = [];
+      const answer = await pc.createAnswer();
+      await pc.setLocalDescription(answer);
+      await sendSignal(peerUserId, 'sdp_answer', { sdp: answer });
+    }
   }, [createPeerConnection, sendSignal, subscribeToSignals]);
 
   const rejectCall = useCallback(async () => {
@@ -398,6 +415,11 @@ export function useWebRTC(currentUserId: string, currentDisplayName?: string): U
             handleSignal(signal);
           } else if ((signal.signal_type === 'call_end' || signal.signal_type === 'call_reject') && state === 'incoming') {
             handleSignal(signal);
+          } else if (state === 'calling' || state === 'connected') {
+            // During active calls, handle SDP and ICE signals as fallback
+            if (['sdp_offer', 'sdp_answer', 'ice_candidate', 'call_end'].includes(signal.signal_type)) {
+              handleSignal(signal);
+            }
           }
         },
       )
@@ -429,8 +451,9 @@ export function useWebRTC(currentUserId: string, currentDisplayName?: string): U
           shouldHandle = signal.signal_type === 'call_offer';
         } else if (state === 'incoming') {
           shouldHandle = signal.signal_type === 'call_end' || signal.signal_type === 'call_reject';
+        } else if (state === 'calling' || state === 'connected') {
+          shouldHandle = ['sdp_offer', 'sdp_answer', 'ice_candidate', 'call_end'].includes(signal.signal_type);
         }
-        // In 'calling'/'connected' state, signaling is handled by subscribeToSignals channel
 
         if (shouldHandle) {
           await handleSignal(signal);

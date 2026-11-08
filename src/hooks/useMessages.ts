@@ -35,6 +35,7 @@ export function useMessages(currentUserId: string, peerId: string | null, peerDi
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [loading, setLoading] = useState(false);
   const [isPeerTyping, setIsPeerTyping] = useState(false);
+  const [replyTarget, setReplyTarget] = useState<ChatMessage | null>(null);
   const typingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const channelRef = useRef<ReturnType<typeof supabase.channel> | null>(null);
   const typingChannelRef = useRef<ReturnType<typeof supabase.channel> | null>(null);
@@ -486,6 +487,40 @@ export function useMessages(currentUserId: string, peerId: string | null, peerDi
     [],
   );
 
+  const deleteAllMessages = useCallback(async () => {
+    if (!roomId || !peerId) return;
+    // Mark all messages in this room as deleted for the current user
+    const { data: msgs } = await supabase
+      .from('messages')
+      .select('id, media_id, deleted_for')
+      .eq('room_id', roomId);
+    if (msgs) {
+      for (const msg of msgs as (Message & { deleted_for?: string[] })[]) {
+        const currentDeletedFor = msg.deleted_for ?? [];
+        if (!currentDeletedFor.includes(currentUserId)) {
+          await supabase
+            .from('messages')
+            .update({ deleted_for: [...currentDeletedFor, currentUserId] })
+            .eq('id', msg.id);
+        }
+      }
+    }
+    // Clear media URL caches for this room
+    for (const [mediaId, url] of mediaUrlCache.current.entries()) {
+      URL.revokeObjectURL(url);
+      mediaUrlCache.current.delete(mediaId);
+    }
+    setMessages([]);
+  }, [roomId, peerId, currentUserId]);
+
+  const replyToMessage = useCallback((message: ChatMessage) => {
+    setReplyTarget(message);
+  }, []);
+
+  const clearReply = useCallback(() => {
+    setReplyTarget(null);
+  }, []);
+
   return {
     messages,
     loading,
@@ -496,6 +531,10 @@ export function useMessages(currentUserId: string, peerId: string | null, peerDi
     sendStopTyping,
     deleteMessageForMe,
     deleteMessageForEveryone,
+    deleteAllMessages,
     reloadMessages: loadMessages,
+    replyToMessage,
+    clearReply,
+    replyTarget,
   };
 }
