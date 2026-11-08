@@ -38,12 +38,14 @@ export type UseWebRTCReturn = {
   remoteStream: MediaStream | null;
   audioMuted: boolean;
   videoEnabled: boolean;
+  facingFront: boolean;
   startCall: (peerUserId: string, peerName: string, peerColor: string, mode: CallMode) => Promise<void>;
   acceptCall: () => Promise<void>;
   rejectCall: () => Promise<void>;
   endCall: () => void;
   toggleAudio: () => void;
   toggleVideo: () => void;
+  switchCamera: () => Promise<void>;
   callError: string | null;
   clearCallError: () => void;
   requestPermissions: (mode: CallMode) => Promise<boolean>;
@@ -57,6 +59,7 @@ export function useWebRTC(currentUserId: string, currentDisplayName?: string): U
   const [remoteStream, setRemoteStream] = useState<MediaStream | null>(null);
   const [audioMuted, setAudioMuted] = useState(false);
   const [videoEnabled, setVideoEnabled] = useState(false);
+  const [facingFront, setFacingFront] = useState(true);
   const [callError, setCallError] = useState<string | null>(null);
 
   const pcRef = useRef<RTCPeerConnection | null>(null);
@@ -394,6 +397,40 @@ export function useWebRTC(currentUserId: string, currentDisplayName?: string): U
     }
   }, []);
 
+  const switchCamera = useCallback(async () => {
+    const pc = pcRef.current;
+    const oldStream = localStreamRef.current;
+    if (!oldStream || !pc) return;
+
+    const oldVideoTrack = oldStream.getVideoTracks()[0];
+    if (!oldVideoTrack) return;
+
+    const newFacing = facingFront ? 'environment' : 'user';
+    try {
+      const newStream = await navigator.mediaDevices.getUserMedia({
+        audio: true,
+        video: { facingMode: newFacing },
+      });
+      const newVideoTrack = newStream.getVideoTracks()[0];
+      if (!newVideoTrack) return;
+
+      const sender = pc.getSenders().find((s) => s.track?.kind === 'video');
+      if (sender) {
+        await sender.replaceTrack(newVideoTrack);
+      }
+
+      oldVideoTrack.stop();
+      oldStream.removeTrack(oldVideoTrack);
+      oldStream.addTrack(newVideoTrack);
+
+      localStreamRef.current = oldStream;
+      setLocalStream(new MediaStream(oldStream));
+      setFacingFront(!facingFront);
+    } catch {
+      setCallError('Unable to switch camera. Your device may not have another camera.');
+    }
+  }, [facingFront]);
+
   // Subscribe to incoming call signals (stable — does not re-create on state change)
   useEffect(() => {
     if (!currentUserId) return;
@@ -496,14 +533,16 @@ export function useWebRTC(currentUserId: string, currentDisplayName?: string): U
     remoteStream,
     audioMuted,
     videoEnabled,
+    facingFront,
     startCall,
     acceptCall,
     rejectCall,
     endCall,
     toggleAudio,
     toggleVideo,
+    switchCamera,
     callError,
     clearCallError,
     requestPermissions,
-  };
+ };
 }

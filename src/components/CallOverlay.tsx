@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Mic, MicOff, Video, VideoOff, PhoneOff, Phone, X } from 'lucide-react';
+import { Mic, MicOff, Video, VideoOff, PhoneOff, Phone, X, SwitchCamera } from 'lucide-react';
 import type { UseWebRTCReturn } from '@/hooks/useWebRTC';
 import { Avatar } from '@/components/Sidebar';
 
@@ -22,11 +22,13 @@ export function CallOverlay({ webrtc }: CallOverlayProps) {
     remoteStream,
     audioMuted,
     videoEnabled,
+    facingFront,
     acceptCall,
     rejectCall,
     endCall,
     toggleAudio,
     toggleVideo,
+    switchCamera,
     callError,
     clearCallError,
     requestPermissions,
@@ -236,6 +238,16 @@ export function CallOverlay({ webrtc }: CallOverlayProps) {
                 title={videoEnabled ? 'Turn off camera' : 'Turn on camera'}
               >
                 {videoEnabled ? <Video className="w-6 h-6" /> : <VideoOff className="w-6 h-6" />}
+              </button>
+            )}
+
+            {isVideoCall && videoEnabled && (
+              <button
+                onClick={switchCamera}
+                className="w-14 h-14 rounded-full flex items-center justify-center transition-all hover:scale-105 bg-white/10 text-white hover:bg-white/20"
+                title={facingFront ? 'Switch to back camera' : 'Switch to front camera'}
+              >
+                <SwitchCamera className="w-6 h-6" />
               </button>
             )}
 
